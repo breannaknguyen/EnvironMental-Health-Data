@@ -1,0 +1,514 @@
+---
+title: "EMH Binning"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+packages <- c("dplyr","tidyr","lme4","lmerTest","ggpubr","tidyverse","emmeans","graphics","heatmaply","knitr","DT","slickR","circlize","reshape2","leaflet","ggmap","plotly","networkD3","jsonlite")
+
+for (package in packages) {
+  if (!requireNamespace(package, quietly = TRUE)) {
+    install.packages(package)
+  }
+  library(package, character.only = TRUE)
+}
+```
+
+```{r, echo=FALSE}
+#Article info, contains titles, author names, and year of each article
+art <- read.csv("/Users/breannanguyen/Desktop/EMH/EMH Coding Files and Documentation/emh_list_clean.csv")
+#All data
+qual <- read.csv("/Users/breannanguyen/Desktop/EMH/EMH Coding Files and Documentation/emh_qualtrics_18_9.csv")
+```
+
+```{r, echo=FALSE}
+#This is all code to clean the raw Qualtrics data.
+#Keep relevant vars and remove all else: status (to filter from survey preview), reviewer, ID, all bins, all country's, all populations, other, ej, all flags, notes
+df <- qual[,c(2,3,18:134)]
+
+#Clean column names
+##Bins, regions, and population columns
+tmp <- df[1,5:113]
+colnames(df)[5:113] <- tmp
+
+##Flag columns
+tmp <- df[1,116:118]
+colnames(df)[116:118] <- tmp
+
+##id column
+colnames(df)[4] <- "id"
+df$id <- gsub("#", "", df$id)
+df$id <- gsub(" -.*", "", df$id)
+
+##Get rid of unnecessary words
+tmp <- colnames(df)
+colnames(df) <- gsub(".* - ", "", tmp)
+
+#Get rid of unnecessary rows
+rownames(df) <- NULL
+df <- df[-c(1:2), ]
+df <- df[df$Status != "Survey Preview",]
+
+# Clean date column and reorder
+colnames(df)[1] <- "date"
+df$date <- gsub(" .*","",df$date)
+df <- df[order(df$date, decreasing=F),]
+
+#Fix country columns
+colnames(df)[85:93] <- c("continent1", "subregion1", "country1", "continent2", "subregion2", "country2", "continent3", "subregion3", "country3")
+
+#Get rid of NA"s
+exclude_cols <- colnames(df)[5:84]
+df <- df %>%
+  mutate_at(vars(-one_of(exclude_cols)), ~ifelse(. == "", NA, .))
+
+#Change initials to names
+df$reviewer <- tolower(df$reviewer)
+df$reviewer <- recode(df$reviewer, "lrm" = "Lars", "mll" = "Miren", "bkn" = "Breanna", "eag" = "Emily", "ebg" = "Elise", "hsf" = "Hannah", "hsf9" = "Hannah", "kca" = "Kelechi", "kca25" = "Kelechi", "mik" = "Mariana", "new" = "Nora")
+
+#Create column that displays all bins in one line for simpler presentation
+bins_list <- character()
+for (i in 1:nrow(df)) {
+  on_columns <- colnames(df)[df[i, -1] == "On"]
+  matrix_cell <- paste(on_columns, collapse = ",")
+  bins_list <- c(bins_list, matrix_cell)
+}
+bins_list <- gsub(",", ", ", bins_list)
+df$matrix_cell <- bins_list
+df$matrix_cell <- gsub(", NA,.*", "", df$matrix_cell)
+
+#Same for populations
+start_column <- 94 
+end_column <- 113
+pop_list <- character()
+for (i in 1:nrow(df)) {
+  pop_columns <- colnames(df)[start_column:end_column][!is.na(df[i, start_column:end_column])]
+  pop <- paste(pop_columns, collapse = ", ")
+  pop_list <- c(pop_list, pop)
+}
+df$pop_list <- pop_list
+```
+
+```{r, echo=FALSE}
+## Make edits from weekly meetings
+# Mark for exclusion
+id_exclude <- c("1430","1911","2623","8906","6752","893","6491","8826","584","3879","8740","1335","4149","6100","6547","6943","8831","2943","3569","5752","6077","8462","2014","6307")
+for (id in id_exclude){
+  df[df$id == id, c("Marked for exclusion (in Covidence)")] <- "Marked for exclusion (in Covidence)"
+}
+
+#Include and update bins
+id_include <- c("3069","3665","4920","5944","7914","900","893","3852","7989","2636","6339","751","1878","2450","5662","6920","6938","8838")
+for (id in id_include){
+  df[df$id == id, c("Marked for exclusion (in Covidence)")] <- NA
+}
+
+df[df$id == "3069",c("Built Environment-Neurocognition")] <- "On"
+
+df[df$id == "3665",c("Built Environment-Affect")] <- "On"
+
+df[df$id == "5944",c("Meteorological-Stress & Resilience")] <- "On"
+df[df$id == "5944",c("Geological-Stress & Resilience")] <- "On"
+
+df[df$id == "7914",c("Chemical Hazards-Neurocognition")] <- "On"
+
+df[df$id == "900",c("Interaction & Perception-Social & Behavioral")] <- "On"
+df[df$id == "900",c("Built Environment-Social & Behavioral")] <- "On"
+df[df$id == "900",c("Interaction & Perception-Affect")] <- "Off"
+df[df$id == "900",c("Built Environment-Affect")] <- "Off"
+
+df[df$id == "3852",c("Built Environment-Mind-Body Relationship")] <- "On"
+df[df$id == "3852",c("Light-Mind-Body Relationship")] <- "On"
+df[df$id == "3852",c("Interaction & Perception-Mind-Body Relationship")] <- "On"
+
+df[df$id == "7989",c("Light-Affect")] <- "On"
+
+#Change to flagship
+flag <- c("1194","3841","2541")
+for (flag in flag){
+  df[df$id == flag, c("Flagship paper")] <- "Flagship paper"
+}
+
+#Change to EJ
+ej <- c("2541")
+for (ej in ej){
+  df[df$id == ej, c("ej")] <- "Yes"
+}
+
+#Update Country
+df[df$id == "3734",c("continent1")] <- "Asia"
+df[df$id == "3734",c("subregion")] <- "Eastern Asia"
+df[df$id == "3734",c("country1")] <- "Japan"
+
+### FIX ERRORS FROM FINAL CHECK ###
+df <- df[-c(320,478,636),]
+df[df$id == "474",c("id")] <- "4474"
+df[df$id == " 8527",c("id")] <- "8527"
+df[df$id == "17clastogenic",c("id")] <- "17"
+```
+
+# Running Counts
+```{r, echo=FALSE}
+#Show counts for each reviewer
+count <- data.frame(table(df$reviewer))
+colnames(count) <- c("Reviewer", "Count")
+sum <- sum(count[,2])
+tmp <- data.frame(Reviewer = "Total", Count = sum)
+count = rbind(count,tmp)
+
+datatable(count)
+```
+
+```{r, echo=FALSE}
+### SEPARATE DF'S
+full <- df
+short_full <- df[,c(1:3,4,85:121)]
+check <- merge(short_full, art, by = "id")
+
+### VERY IMPORTANT ###
+### Edit df so that it only has data that we haven't gone over
+start_date <- "2023-09-11"
+index <- which(df$date == start_date)[1]
+df <- df[index:nrow(df), ]
+
+#Make short table so I don't have to scroll
+short <- df[,c(1:3,4,86:121)]
+```
+
+## Flags
+### General flags and notes
+```{r, echo=FALSE}
+flag <- merge(short, art, by = "id")
+flag <- flag[!is.na(flag[, 35]) | !is.na(flag[, 36]) | !is.na(flag[, 37]) | !is.na(flag[, 38]), c(4, 1, 42, 35, 36, 37, 38)]
+datatable(flag)
+```
+
+### More than 5 bins
+```{r, echo=FALSE}
+#Create table with only papers with more than 5 bins
+max <- df %>%
+  filter(rowSums(df == "On", na.rm = TRUE) > 5)
+max <- merge(max, art, by = "id")
+
+#Show reviewer and titles
+datatable(max[,c(4,1,123,119,116)])
+
+#Create loop that displays matrix max for each paper in max
+#empty list of plots
+plots <- list()
+for (i in 1:length(unique(max$id))){
+  tmp <- df[df$id == unique(max$id)[i],]
+  name <- tmp$id[1]
+  tmp <- tmp[,5:84]
+  title <- art[art$id == name,3]
+  column_names <- colnames(tmp)
+  x <- sub("-.*", "", column_names)
+  y <- sub(".*-", "", column_names)
+  y <- gsub("Body Relationship", "Mind-Body Relationship", y)
+
+  count <- colSums(tmp == "On")
+
+  bin <- data.frame(x, y, count)
+
+  bin$x <- factor(bin$x, levels = unique(bin$x))
+  bin$y <- factor(bin$y, levels = unique(bin$y))
+
+  heatmap <- ggplot(bin, aes(x = x, y = y, fill = count)) +
+                geom_tile(color = "black") +
+                scale_fill_gradient2(mid = "#FFFFFF", high = "#0A3245") +
+                coord_fixed() +
+                labs(title = str_wrap(paste(name,title), width = 60), x = "Environment", y = "Mental Health") +
+                theme(plot.title = element_text(hjust = 0.5),
+                  axis.title.x.top = element_text(vjust = -1),
+                  axis.text.x.top = element_text(angle = 90, vjust = 1, hjust = 1),
+                  axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  plots[[i]] <- heatmap
+  print(heatmap)
+}
+```
+
+## Summary Statistics and Figures
+### Matrix
+```{r, echo=FALSE, fig.width=8, fig.height=8}
+## Exclude exclusions (ONLY FROM FULL DATASET)
+colnames(full)[118] <- "exclusion"
+full <- subset(full, is.na(exclusion))
+colnames(short_full)[37] <- "exclusion"
+short_full <- subset(short_full, is.na(exclusion))
+
+#Matrix
+tmp <- full[,5:84]
+column_names <- colnames(tmp)
+x <- sub("-.*", "", column_names)
+y <- sub(".*-", "", column_names)
+y <- gsub("Body Relationship", "Mind-Body Relationship", y)
+
+count <- colSums(tmp == "On")
+
+bin <- data.frame(x, y, count)
+
+custom_x_order <- c("Chemical Hazards", "Built Environment", "Interaction & Perception", "Light", "Water", "Air", "Land", "Biota", "Meteorological", "Geological")
+custom_y_order <- c("Neurocognition", "Neurodevelopment", "Mind-Body Relationship", "Stress & Resilience", "Affect", "Social & Behavioral", "Personality & Identity", "Reality Connection")
+
+
+bin$x <- factor(bin$x, levels = custom_x_order)
+bin$y <- factor(bin$y, levels = rev(custom_y_order))
+
+heatmap <- ggplot(bin, aes(x = x, y = y, fill = count)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(mid = "blue", high = "red") +
+  geom_text(aes(label = count), color = "white", vjust = 0.5) +  # Add this line
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  labs(title = "Full Heatmap Matrix", x = "Environment", y = "Mental Health", cex = 5) +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 6),
+        axis.title.x.top = element_text(vjust = 3),
+        axis.text.x.top = element_text(angle = 45, vjust = 0, hjust = 0))
+
+heatmap 
+
+bin2 <- subset(bin, y != "Neurocognition")
+bin2 <- subset(bin2, y != "Neurodevelopment")
+heatmap2 <- ggplot(bin2, aes(x = x, y = y, fill = count)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(mid = "blue", high = "red") +
+  geom_text(aes(label = count), color = "white", vjust = 0.5) +  # Add this line
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  labs(title = "Full Heatmap Matrix WITHOUT Neuro[cognition/development]", x = "Environment", y = "Mental Health", cex = 5) +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 6),
+        axis.title.x.top = element_text(vjust = 3),
+        axis.text.x.top = element_text(angle = 45, vjust = 0, hjust = 0))
+
+heatmap2
+```
+
+### Sorted Categories
+```{r, echo=FALSE}
+bin$pct <- round(bin$count/sum(bin$count)*100,2)
+sorted_bin <- bin[order(bin$pct, decreasing=TRUE),]
+rownames(sorted_bin) <- NULL
+colnames(sorted_bin) <- c("Environment", "Mental Health", "Count", "Percentage")
+
+env <- bin %>%
+  group_by(x) %>%
+  summarize(total_count = sum(count))
+colnames(env) <- c("Environment", "Count")
+
+men <- bin %>%
+  group_by(y) %>%
+  summarize(total_count = sum(count))
+colnames(men) <- c("Mental Health", "Count")
+
+env$Percentage <- round(env$Count/sum(bin$count)*100, 2)
+men$Percentage <- round(men$Count/sum(bin$count)*100, 2)
+
+datatable(sorted_bin)
+datatable(env[order(env$Percentage, decreasing=TRUE),])
+datatable(men[order(men$Percentage, decreasing=TRUE),])
+```
+
+
+### Chord Diagram
+```{r, echo=FALSE, fig.width=8, fig.height=8}
+tmp <- full[,5:84]
+column_names <- colnames(tmp)
+x <- sub("-.*", "", column_names)
+y <- sub(".*-", "", column_names)
+y <- gsub("Body Relationship", "Mind-Body Relationship", y)
+
+count <- colSums(tmp == "On")
+
+bin <- data.frame(x, y, count)
+
+bin$x <- factor(bin$x, levels = unique(bin$x))
+bin$y <- factor(bin$y, levels = unique(bin$y))
+
+green_palette <- colorRampPalette(c("#d9ffdd", "#034209"))(10)
+blue_palette <- colorRampPalette(c("#c9deff", "#001d4a"))(8)
+black_palette <- colorRampPalette(c("#D3D3D3", "#D3D3D3"))(8)
+
+tmp <- bin
+rownames(tmp) <- NULL
+colnames(tmp) <- c("x", "y", "z")
+
+tmp[,1] <- as.character(tmp[,1])
+tmp[,2] <- as.character(tmp[,2])
+
+custom_colors <- c(green_palette, blue_palette)
+custom_colors2 <- c("#D9C57C", "#5C8DAC", "#A8C4D0", "#A9B6A9", "#5F9E6A", "#D9872B", "#6B6A66", "#CC3700", "#6B8DBF", "#896946", black_palette)
+
+circos.clear()
+circos.par(
+  canvas.xlim = c(-1.4, 1.4),
+  canvas.ylim = c(-1.0, 1.0),
+  start.degree = 270
+)
+chordDiagram(tmp, transparency = .2, grid.col = custom_colors2, annotationTrack = "grid", 
+    preAllocateTracks = list(track.height = max(strwidth(unlist(dimnames(tmp))))))
+circos.track(track.index = 1, panel.fun = function(x, y) {
+    circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index, 
+        facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.5), cex = 0.9)
+}, bg.border = NA)
+mtext("Interrelationship Between Environment and Mental Health Categories", side = 3, cex = 1.2)
+```
+
+```{r, echo=FALSE}
+#### Environment bins
+tmp <- full[,5:84]
+tmp[,1:80] <- ifelse(tmp == "On", 1, 0)
+```
+
+### Sankey Diagram
+```{r, echo = FALSE, fig.width=10, fig.height=8}
+links <- data.frame(
+  source=bin$x, 
+  target=bin$y, 
+  value=bin$count
+  )
+
+nodes <- data.frame(
+  name=c(as.character(unique(links$source)), 
+  as.character(unique(links$target))) %>% unique()
+)
+
+nodes$ID <- gsub(" ", "_", nodes$name)
+nodes$ColorName <- gsub(" ", "_", nodes$name)
+
+links$IDsource <- match(links$source, nodes$name)-1 
+links$IDtarget <- match(links$target, nodes$name)-1
+
+node_color <- 'd3.scaleOrdinal().domain(["Light", "Water", "Air", "Land", "Biota","Interaction_&_Perception", "Built_Environment", "Chemical_Hazards", "Meteorological", "Geological","Neurocognition","Neurodevelopment","Personality_&_Identity","Reality_Connection","Social_&_Behavioral","Mind-Body_Relationship","Stress_&_Resilience","Affect"]).range(["#D9C57C", "#5C8DAC", "#A8C4D0", "#A9B6A9", "#5F9E6A", "#d9872b", "#6B6A66", "#CC3700", "#6B8DBF", "#896946", "#FFFFFF", "#DADADA", "#B6B6B6", "#919191", "#6D6D6D", "#484848", "#242424", "#000000"])'
+
+p <- sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "ID", 
+              sinksRight=FALSE, iterations = 0, fontSize = 12, 
+              nodeWidth = 30, colourScale = node_color)
+p
+```
+
+### Geographic Breakdown
+```{r, echo=FALSE, fig.width=10, fig.height=8}
+cont <- c(short_full$continent1, short_full$continent2, short_full$continent3)
+general <- sum(is.na(cont))
+cont <- na.omit(cont)
+cont <- as.data.frame(table(cont))
+
+geo <-    ggplot(cont, aes(x = reorder(cont, -Freq), y = Freq)) +
+            geom_bar(stat = "identity", fill = "lightblue") +
+            geom_text(aes(label = Freq), vjust = -0.5, angle = 0, hjust = 0.5) +
+            labs(title = "Continent Counts", x = "Continent", y = "Count") +
+            theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+            coord_cartesian(ylim = c(0, max(cont$Freq) * 1.2))
+geo
+```
+
+
+### Population Breakdown
+```{r, echo=FALSE, fig.width=10, fig.height=8}
+tmp <- short_full[,c(14:33)]
+
+new_df <- tmp %>%
+  summarize_all(~ sum(!is.na(.))) %>%
+  gather(key = "Column", value = "Count")
+pop <-    ggplot(new_df, aes(x = reorder(Column, -Count), y = Count)) +
+            geom_bar(stat = "identity", fill = "lightblue") +
+            geom_text(aes(label = Count), vjust = -0.5, angle = 0, hjust = 0.5) +
+            labs(title = "Population Frequencies", x = "Population", y = "Count") +
+            theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+            coord_cartesian(ylim = c(0, max(new_df$Count) * 1.2)) +
+            theme(plot.margin = unit(c(1,1,1,2.5), "cm"))
+pop
+
+
+other <- subset(short_full, !is.na(other))
+print("Fill ins for other populations")
+other[,"other"]
+```
+
+
+### Article Frequency Timeline
+```{r, echo=FALSE, fig.width=10, fig.height=8}
+years <- gsub(".* ", "", art$author)
+years <- gsub("#8740", NA, years)
+years <- gsub("2023", NA, years)
+
+year <- as.data.frame(table(years))
+year <- na.omit(year)
+year$years <- as.numeric(as.character(year$years))
+
+x <- as.numeric(as.character(year$years))
+y <- year$Freq
+
+y <- ggplot(year,aes(x=years, y=Freq))+geom_line()
+y <- y + labs(x = "Year", y = "Frequency", title = "Article Frequency Timeline")
+y
+```
+
+
+
+### Environmental Justice
+```{r, echo=FALSE, fig.width=10, fig.height=8}
+ej_tab <- merge(full, art, by = "id")
+
+#not sure why but there are some NA's
+ej_tab$ej <- ifelse(is.na(ej_tab$ej), "No", ej_tab$ej)
+
+ej <-  ggplot(ej_tab, aes(x = ej)) +
+          geom_bar(fill = "lightblue") +
+          labs(title = "Environmental Justice", x = "Inclusion", y = "Count")
+
+# datatable(ej_tab[ej_tab$ej == "Yes", c("reviewer", "id", "author", "title", "notes")])
+
+
+ej_tab <- ej_tab[ej_tab$ej == "Yes",]
+ej_tab <- merge(ej_tab, art, by = "id")
+
+tmp <- ej_tab[,5:84]
+column_names <- colnames(tmp)
+x <- sub("-.*", "", column_names)
+y <- sub(".*-", "", column_names)
+y <- gsub("Body Relationship", "Mind-Body Relationship", y)
+
+count <- colSums(tmp == "On")
+
+bin <- data.frame(x, y, count)
+
+custom_x_order <- c("Chemical Hazards", "Built Environment", "Interaction & Perception", "Light", "Water", "Air", "Land", "Biota", "Meteorological", "Geological")
+custom_y_order <- c("Neurocognition", "Neurodevelopment", "Mind-Body Relationship", "Stress & Resilience", "Affect", "Social & Behavioral", "Personality & Identity", "Reality Connection")
+
+
+bin$x <- factor(bin$x, levels = custom_x_order)
+bin$y <- factor(bin$y, levels = rev(custom_y_order))
+
+heatmap <- ggplot(bin, aes(x = x, y = y, fill = count)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(mid = "blue", high = "red") +
+  geom_text(aes(label = count), color = "white", vjust = 0.5) +  # Add this line
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  labs(title = "Environmental Justice Heatmap Matrix", x = "Environment", y = "Mental Health", cex = 5) +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 6),
+        axis.title.x.top = element_text(vjust = 3),
+        axis.text.x.top = element_text(angle = 45, vjust = 0, hjust = 0))
+
+heatmap 
+
+years <- gsub(".* ", "", ej_tab$author.x)
+years <- na.omit(gsub("2023", NA, years))
+
+year <- as.data.frame(table(years))
+year <- na.omit(year)
+year$years <- as.numeric(as.character(year$years))
+
+x <- as.numeric(as.character(year$years))
+y <- year$Freq
+
+y <- ggplot(year,aes(x=years, y=Freq))+geom_line()
+y <- y + labs(x = "Year", y = "Frequency", title = "Environmental Justice Frequency Timeline")
+y
+
+```
+
